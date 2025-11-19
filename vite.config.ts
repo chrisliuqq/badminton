@@ -8,7 +8,7 @@ export default defineConfig({
   base: '/badminton/',
   plugins: [vue(), tailwindcss()],
   build: {
-    outDir: 'build',
+    outDir: 'docs',
     emptyOutDir: true,
     rollupOptions: {
       output: {
