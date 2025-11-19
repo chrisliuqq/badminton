@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watchEffect } from 'vue'
 import interact from 'interactjs'
+import ControlPanel from './components/ControlPanel.vue'
 
 // --- Types ---
 interface Player {
@@ -29,6 +30,10 @@ const players = ref<Player[]>([
 
 const scaleFactor = ref(1)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+const autoRotationEnabled = ref(false)
+
+// Animation state
+let animationFrameId: number | null = null
 
 // --- Logic: Defense Range Calculation ---
 const calculateDefenseRadius = (y: number) => {
@@ -161,6 +166,152 @@ watchEffect(() => {
 })
 
 
+// --- Logic: Auto-Rotation (Standard Badminton Tactics) ---
+const calculateOptimalPosition = (movingPlayer: Player, _teammate: Player): { x: number, y: number } => {
+  const centerX = COURT_WIDTH / 2 // 305
+  const NET_Y = 670
+  const BACK_LINE_Y = 1340
+  const CENTER_Y = (NET_Y + BACK_LINE_Y) / 2 // 1005
+
+  // State Thresholds
+  const ATTACK_THRESHOLD = 1200 // Deep back court -> Attack
+  const NET_THRESHOLD = 900     // Near net -> Net Play
+
+  let targetX, targetY
+
+  // --- State Determination ---
+  if (movingPlayer.y > ATTACK_THRESHOLD) {
+    // === STATE: ATTACK (Front-and-Back) ===
+    // Scenario: Player is in deep back court (Smashing/Clearing).
+    // Role: Teammate becomes Front Player (Net Interceptor).
+    // Tactic: Straight Line Priority (Pressure).
+    
+    // Y: Move to Front T-Point area (approx 900-950)
+    targetY = 920 
+
+    // X: Same-Side Interception
+    // If A1 is Right, A2 goes Right. If A1 is Left, A2 goes Left.
+    // We use a small offset from center to bias towards the attacking side.
+    const dx = movingPlayer.x - centerX
+    const attackBias = 0.2 // Bias factor
+    targetX = centerX + (dx * attackBias)
+
+  } else if (movingPlayer.y < NET_THRESHOLD) {
+    // === STATE: NET PLAY (Front-and-Back) ===
+    // Scenario: Player is at the net (Lift/Net Shot).
+    // Role: Teammate becomes Back Player (Rear Coverage).
+    // Tactic: Cross-Court Coverage (Safety).
+
+    // Y: Dynamic Rear Coverage
+    // Problem with fixed 1250: If MP is at 850 (just slightly front), TM goes to 1250 (deep back), leaving mid-front open.
+    // New Logic: The further MP goes forward, the further TM goes back.
+    // Pivot around Center (1005).
+    
+    const yDistFromCenter = CENTER_Y - movingPlayer.y // Positive value
+    const netPivotFactor = 0.25 // Reduced from 0.8 to 0.25 to keep TM closer to T-point (approx 1150) instead of deep back
+    
+    targetY = CENTER_Y + (yDistFromCenter * netPivotFactor)
+    
+    // Clamp to ensure they don't go off court but also don't stay too close to center
+    targetY = Math.min(targetY, 1300) // Max back position
+
+    // X: Opposite Side (Coverage)
+    // If A1 is Right Net, A2 covers Left Rear.
+    // We use a moderate mirror factor to cover the open space.
+    const dx = movingPlayer.x - centerX
+    const coverageFactor = 0.2 // Reduced from 0.4 to keep TM closer to center
+    targetX = centerX - (dx * coverageFactor)
+
+  } else {
+    // === STATE: DEFENSE (Side-by-Side) ===
+    // Scenario: Player is in Mid-Court (Defense/Transition).
+    // Role: Teammate stays Parallel but Staggered.
+    // Tactic: Linked Defense (Windshield Wiper) + Soft Pivot.
+
+    // Y: Soft Pivot (Staggered Alignment)
+    // Problem with previous logic: Strict parallel leaves front/back open if MP moves slightly back/forward.
+    // New Logic: If MP moves back, TM moves slightly forward (and vice versa).
+    // "See-Saw" effect around the center.
+    
+    const yDiff = movingPlayer.y - CENTER_Y
+    // If yDiff > 0 (Back), we want target to be slightly forward (negative adjustment).
+    // Stagger Factor 0.6: If MP moves back 100px, TM moves forward 60px relative to MP?
+    // No, relative to Center?
+    // Let's say: targetY = CENTER_Y - (yDiff * 0.5)
+    // If MP=1105 (Back 100), TM = 1005 - 50 = 955.
+    // This creates a nice diagonal.
+    
+    targetY = CENTER_Y - (yDiff * 0.5)
+
+    // X: Inverse Offset Logic (Anti-Overlap)
+    // Problem with previous logic: When A1 moves to center, A2 also moves to center -> Overlap.
+    // New Logic: 
+    // - If A1 is at Center (dx=0), A2 should be Wide (Base Width).
+    // - If A1 is at Sideline (dx=Max), A2 should be Narrow (Cover Center).
+    
+    const dx = movingPlayer.x - centerX
+    const baseDefenseWidth = 260 // Increased from 180 to widen the defense stance
+    const compressionFactor = 0.8 // Increased from 0.6 to ensure faster convergence to center when partner is wide
+    
+    // Calculate how far A2 should be from center
+    // The further A1 is from center, the closer A2 gets to center.
+    let targetOffset = baseDefenseWidth - (Math.abs(dx) * compressionFactor)
+    
+    // Ensure A2 doesn't cross over to A1's side (keep min offset positive-ish)
+    // But actually, we want A2 to stay on their side.
+    targetOffset = Math.max(20, targetOffset) // Keep at least 20px from center
+    
+    // Apply direction: Opposite to A1
+    // If A1 is Right (dx>0), A2 is Left (centerX - offset).
+    // If A1 is Left (dx<0), A2 is Right (centerX + offset).
+    targetX = centerX - (Math.sign(dx || 1) * targetOffset)
+  }
+
+  // --- Clamping & Safety ---
+  // Smart Clamp: Ensure defense range doesn't extend too far outside the court.
+  // Applied ONLY to the auto-rotating teammate (calculated position).
+  // We calculate the defense radius at the target Y, and ensure the player is at least
+  // a certain fraction of that radius away from the edge.
+  
+  const currentRadius = calculateDefenseRadius(targetY)
+  const edgeMargin = Math.max(PLAYER_RADIUS, currentRadius * 0.5) // Increased from 0.3 to 0.5 to reduce wasted range
+  
+  targetX = Math.max(edgeMargin, Math.min(targetX, COURT_WIDTH - edgeMargin))
+  targetY = Math.max(NET_Y + edgeMargin, Math.min(targetY, COURT_HEIGHT - edgeMargin))
+  
+  return { x: targetX, y: targetY }
+}
+
+const animatePlayerMove = (player: Player, targetX: number, targetY: number, duration: number = 300) => {
+  const startX = player.x
+  const startY = player.y
+  const startTime = performance.now()
+  
+  const animate = (currentTime: number) => {
+    const elapsed = currentTime - startTime
+    const progress = Math.min(elapsed / duration, 1)
+    
+    // Ease out quad for smooth deceleration
+    const easeProgress = 1 - Math.pow(1 - progress, 2)
+    
+    player.x = startX + (targetX - startX) * easeProgress
+    player.y = startY + (targetY - startY) * easeProgress
+    
+    if (progress < 1) {
+      animationFrameId = requestAnimationFrame(animate)
+    } else {
+      animationFrameId = null
+    }
+  }
+  
+  // Cancel any existing animation
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId)
+  }
+  
+  animationFrameId = requestAnimationFrame(animate)
+}
+
 // --- Logic: Scaling ---
 const updateScale = () => {
   const heightScale = window.innerHeight / COURT_HEIGHT
@@ -211,6 +362,22 @@ const initInteract = () => {
 
             player.x = newX
             player.y = newY
+          }
+        },
+        end(event) {
+          const targetId = event.target.id.split('-')[1]
+          const player = players.value.find(p => p.id === targetId)
+          
+          // Auto-rotation for Team A only (Triggered on Drag End)
+          if (player && autoRotationEnabled.value && player.id.startsWith('A')) {
+            const teammate = players.value.find(p => 
+              p.id.startsWith('A') && p.id !== player.id
+            )
+            
+            if (teammate) {
+              const optimalPos = calculateOptimalPosition(player, teammate)
+              animatePlayerMove(teammate, optimalPos.x, optimalPos.y, 400) // Slightly slower for "reaction" feel
+            }
           }
         }
       }
@@ -311,5 +478,8 @@ const courtStyle = computed(() => ({
       </div>
 
     </div>
+
+    <!-- Control Panel -->
+    <ControlPanel v-model:autoRotation="autoRotationEnabled" />
   </div>
 </template>
