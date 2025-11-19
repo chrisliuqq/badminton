@@ -163,9 +163,8 @@ watchEffect(() => {
 
 // --- Logic: Scaling ---
 const updateScale = () => {
-  const widthScale = window.innerWidth / COURT_WIDTH
   const heightScale = window.innerHeight / COURT_HEIGHT
-  scaleFactor.value = Math.min(widthScale, heightScale)
+  scaleFactor.value = heightScale
 }
 
 // --- Logic: Interact.js ---
@@ -267,11 +266,11 @@ const courtStyle = computed(() => ({
 </script>
 
 <template>
-  <div class="w-full h-dvh bg-gray-900 flex justify-center overflow-hidden relative touch-none">
+  <div class="w-full h-screen bg-gray-900 flex justify-center items-center overflow-hidden relative touch-none">
     
     <!-- Court Container -->
     <div 
-      class="relative bg-no-repeat bg-contain bg-center shadow-2xl origin-top will-change-transform"
+      class="relative bg-no-repeat bg-contain bg-center shadow-2xl origin-center will-change-transform flex-shrink-0"
       :style="courtStyle"
     >
       
