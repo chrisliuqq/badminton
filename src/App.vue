@@ -266,7 +266,7 @@ const courtStyle = computed(() => ({
 </script>
 
 <template>
-  <div class="w-full h-screen bg-gray-900 flex justify-center items-center overflow-hidden relative touch-none">
+  <div class="w-full h-dvh bg-gray-900 flex justify-center items-center overflow-hidden relative touch-none">
     
     <!-- Court Container -->
     <div 
